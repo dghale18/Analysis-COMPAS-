@@ -1,4 +1,4 @@
-# Analysis-COMPAS-
+# Analysis of COMPAS 
 
 For my senior year thesis, I analyzed multiple academic papers and articles regarding racial bias in a widely used recidivism model called COMPAS. The initial study was published by ProPublica (PP) and the authors made their dataset available for public use.
 
