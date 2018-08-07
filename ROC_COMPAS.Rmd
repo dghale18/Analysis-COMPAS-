@@ -1,0 +1,219 @@
+---
+title: "ROC demonstration"
+runtime: shiny
+output: html_notebook
+---
+
+A demonstration of a logistic regression fit, a confusion matrix and an ROC curve
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require('mosaic')
+require('mosaicData')
+require('ggplot2')
+require('AUC')
+library('plotly')
+library('shiny')
+library(pROC)
+
+
+load("~/Documents/COMPAS_PROPUBLICA/compas_scores_two_years.rda")
+
+compas_r <- dplyr::select(compas_scores_two_years, id, age, c_charge_degree, race, age_cat, score_text, sex, priors_count, days_b_screening_arrest, decile_score, is_recid, two_year_recid, c_jail_in, c_jail_out) %>%
+   filter(days_b_screening_arrest <= 30) %>%
+   filter(days_b_screening_arrest >= -30) %>%
+   filter(is_recid != -1) %>%
+   filter(c_charge_degree != "O") %>%
+   filter(score_text != 'N/A')
+
+rm(compas_scores_two_years)
+
+compas_r$two_year_recid <- as.factor(as.character(compas_r$two_year_recid))
+compas_r$decile_score <- as.double(compas_r$decile_score)
+
+compas_logit <- glm(two_year_recid ~ decile_score, data = compas_r, family ="binomial")
+
+b0 <- coefficients(compas_logit)[1]
+b1 <- coefficients(compas_logit)[2]
+
+compas_logit_function <- function(x) (exp(b0 + b1 * x)) / (1 + exp(b0 + b1 * x))
+
+compas.logit.function.plot <- function(x) 1 + (exp(b0 + b1 * x)) / (1 + exp(b0 + b1 * x))
+
+# converts an x value into a probability
+compas.x.from.prob <- function(prob){
+  return((log(prob/(1-prob)) - b0)/b1)
+}
+
+# 
+# # converts a probability into an x value
+# compas.x.from.prob <- function(prob){
+#   return( as.numeric((log(prob/(1-prob)) - b0)/b1))
+# }
+
+# creates a confusion matrix from predicted probabilities, ground truth and a threshold
+calc.error.rate <- function(predicted.probs, ground.truth, prob.threshold.class1){
+  result <- NULL
+  confusion.matrix <- table(ground.truth, predicted.probs >= prob.threshold.class1)
+  result$error.rate <- (confusion.matrix[1, 2] + confusion.matrix[2, 1])/sum(confusion.matrix) 
+  
+  # change the row and column names to be more meaningful
+  rownames(confusion.matrix) <- c("True (-)", "True (+)")
+  colnames(confusion.matrix) <- c("Pred (-)", "Pred (+)")
+
+  # doesn't seem to show when the table is rendered
+  names(dimnames(confusion.matrix)) <- c("Truth", "Predicted")
+  
+  result$confusion.matrix <- confusion.matrix
+  return(result)
+}
+
+
+```
+
+
+
+
+```{r, echo = FALSE}
+
+
+get.confusion.matrix <- reactive({
+  
+    predicted.probs <- compas_logit_function(compas_r$decile_score)
+    ground.truth <- compas_r$two_year_recid
+      
+    confusion.matrix <- calc.error.rate(predicted.probs, ground.truth, input$cond_prob)$confusion.matrix
+  
+})
+
+
+get.error.rate <- reactive({
+
+    predicted.probs <- compas_logit_function(compas_r$decile_score)
+    ground.truth <- compas_r$two_year_recid
+      
+    error.rate <- calc.error.rate(predicted.probs, ground.truth, input$cond_prob)$error.rate
+   
+})
+
+
+get.roc.data.frame <- reactive({
+
+    predicted.probs <- compas_logit_function(compas_r$decile_score)
+    ground.truth <- compas_r$two_year_recid
+      
+    roc.curve <- roc(predicted.probs, ground.truth)
+    roc.data.frame <- data.frame(tpr = roc.curve$tpr, fpr = roc.curve$fpr)
+   
+})
+
+
+
+
+
+```
+
+
+
+
+```{r, echo=FALSE}
+inputPanel(
+
+  
+  selectInput("demo", 
+                   "Choose one of the categories:",
+                   list("Race", "Sex", "Age Category"), 
+                   list("race","sex", "age_cat")),
+  
+    sliderInput("cond_prob", label = "Threshold Pr(Y = 1 |x) is classified as recidivist:",
+              min = 0, max = 10, value = 5, step = 1)
+  
+)
+
+#inputPanel(
+
+    renderPlot({
+
+      x.value <- compas.x.from.prob(input$cond_prob)
+      
+      compas_r.aug <- compas_r
+      compas_r$classified.as.recidivist <- compas_r$decile_score > x.value
+  
+      compas_r  %>%
+        ggplot(aes(x = decile_score, y = two_year_recid)) + 
+      geom_jitter(alpha = .1, position = position_jitter(height = .2), aes(color = classified.as.recidivist)) + 
+      theme(axis.text=element_text(size=20),
+      axis.title=element_text(size=20,face="bold")) +
+      xlab("Price ($)") + 
+      ylab ("Pr(y = recidivist | x = decile score )") + 
+      stat_function(fun = compas_logit_function_plot, color = "red") +
+      geom_vline(xintercept = x.value, col = "blue") + 
+      geom_hline(yintercept = input$cond_prob + 1, col = "blue", linetype="dotted") 
+  
+    })
+
+# Need to figure out the layout manager to make look better - for not putting the ROC curve on the bottom
+#)  # end the input panel
+
+  #  renderPlot({
+      
+  #    predicted.probs <- compas_logit_function(compas_r$decile_score)
+  #    ground.truth <- compas_r$two_year_recid
+      
+  #    plot(roc(predicted.probs, ground.truth))
+  #  })
+    
+
+      
+
+```
+
+
+## Confusion matrix
+
+```{r, echo = FALSE}
+inputPanel(
+  
+  renderTable({
+  get.confusion.matrix()
+}),
+
+
+renderText({
+  paste("The error rate is: ", round(get.error.rate(), 4))
+})
+
+
+)
+
+
+```
+
+
+# ROC curve
+```{r, echo = FALSE}
+
+    renderPlot({
+      
+      roc.data.frame <- get.roc.data.frame()
+          
+      confusion.matrix <- get.confusion.matrix()
+      
+      fpr <- confusion.matrix[1, 2]/(confusion.matrix[1, 2] + confusion.matrix[1, 1])
+      tpr <- confusion.matrix[2, 2]/(confusion.matrix[2, 1] + confusion.matrix[2, 2]) 
+      point.data.frame <- data.frame(x = fpr, y = tpr)
+          
+      
+      roc.data.frame  %>%
+        ggplot(aes(x = fpr, y = tpr)) +
+        geom_line(color = demo) +
+        theme(axis.text = element_text(size = 20),
+        axis.title = element_text(size = 20,face = "bold")) +
+        xlab("False Positive Rate (FP/N)") +
+        ylab ("True Positive Rate (TP/P)") +
+        geom_abline(intercept = 0, slope = 1, col = "gray") +
+        geom_point(data = point.data.frame, aes(x = x, y = y), color = "red")
+        
+    })
+    
+```
